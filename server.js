@@ -6,38 +6,37 @@ const crypto = require("crypto");
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_DIR = __dirname;
 const DATA_FILE = path.join(__dirname, "data.json");
+const USERS_FILE = path.join(__dirname, "users.json");
 const sessions = new Map();
-
-const users = [
-  { username: "parent", password: "parent123", role: "applicant" },
-  { username: "clerk", password: "clerk123", role: "clerk" },
-  { username: "admin", password: "admin123", role: "admin" },
-];
-
-const today = new Date().toISOString().slice(0, 10);
-const seedApplications = [
-  { id: "BT-0001", childName: "Brian Ondieki Nyaboke", dob: "2026-08-14", gender: "Male", birthPlace: "Kisii Teaching & Referral Hospital", parentName: "Grace Nyaboke", parentId: "27845612", parentPhone: "0712345678", submittedBy: "parent", dateSubmitted: today, status: "Under Review" },
-  { id: "BT-0002", childName: "Faith Moraa Onsongo", dob: "2026-07-02", gender: "Female", birthPlace: "Nyanchwa Hospital", parentName: "Peter Onsongo", parentId: "30124578", parentPhone: "0723456789", submittedBy: "parent", dateSubmitted: today, status: "Issued" },
-];
+const STATUSES = ["Submitted", "Under Review", "Approved", "Issued"];
 
 function readApplications() {
   if (!fs.existsSync(DATA_FILE)) {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(seedApplications, null, 2));
-    return seedApplications;
+    fs.writeFileSync(DATA_FILE, "[]\n", { mode: 0o600 });
+    return [];
   }
-  try {
-    return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-  } catch {
-    return seedApplications;
-  }
+  const applications = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+  if (!Array.isArray(applications)) throw new Error("Application data is invalid.");
+  return applications;
 }
 
 function writeApplications(applications) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(applications, null, 2));
+  fs.writeFileSync(DATA_FILE, JSON.stringify(applications, null, 2), { mode: 0o600 });
+}
+
+function readUsers() {
+  if (!fs.existsSync(USERS_FILE)) return [];
+  const users = JSON.parse(fs.readFileSync(USERS_FILE, "utf8"));
+  if (!Array.isArray(users)) throw new Error("Account data is invalid.");
+  return users;
+}
+
+function writeUsers(users) {
+  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), { mode: 0o600 });
 }
 
 function send(res, status, value) {
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
   res.end(JSON.stringify(value));
 }
 
@@ -46,16 +45,25 @@ function readJson(req) {
     let body = "";
     req.on("data", (chunk) => {
       body += chunk;
-      if (body.length > 1_000_000) req.destroy(new Error("Request body too large"));
-    });
-    req.on("end", () => {
-      try {
-        resolve(body ? JSON.parse(body) : {});
-      } catch {
-        reject(new Error("Invalid JSON"));
+      if (body.length > 1_000_000) {
+        const error = new Error("Request body too large.");
+        error.statusCode = 413;
+        reject(error);
+        req.destroy();
       }
     });
+    req.on("end", () => {
+      try { resolve(body ? JSON.parse(body) : {}); }
+      catch { const error = new Error("Invalid JSON."); error.statusCode = 400; reject(error); }
+    });
+    req.on("error", reject);
   });
+}
+
+function httpError(statusCode, message) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
 }
 
 function tokenFrom(req) {
@@ -88,82 +96,98 @@ function nextId(applications) {
   return `BT-${String(highest + 1).padStart(4, "0")}`;
 }
 
-async function api(req, res, pathname) {
-  if (pathname === "/api/login" && req.method === "POST") {
-    const { username, password, role } = await readJson(req);
-    const user = users.find((item) => item.username === username && item.password === password && item.role === role);
-    if (!user) return send(res, 401, { error: "Invalid username, password or role." });
-    const token = crypto.randomBytes(24).toString("hex");
-    const session = { username: user.username, role: user.role };
-    sessions.set(token, session);
-    return send(res, 200, { token, user: session });
+function publicUser(user) {
+  return { name: user.name, username: user.username, role: user.role };
+}
+
+function validateAccount(body) {
+  const name = String(body.name || "").trim();
+  const username = String(body.username || "").trim();
+  const password = String(body.password || "");
+  if (!name || name.length > 120) throw httpError(400, "Enter a full name of up to 120 characters.");
+  if (!/^[A-Za-z0-9._-]{3,64}$/.test(username)) throw httpError(400, "Username must be 3-64 characters using letters, numbers, dots, underscores or hyphens.");
+  if (password.length < 6 || password.length > 1024) throw httpError(400, "Password must be at least 6 characters.");
+  return { name, username, password };
+}
+
+function createUser(body, role) {
+  const account = validateAccount(body);
+  const users = readUsers();
+  if (users.some((user) => normalize(user.username) === normalize(account.username))) throw httpError(409, "That username is already taken.");
+  const salt = crypto.randomBytes(16).toString("hex");
+  const passwordHash = crypto.scryptSync(account.password, salt, 64).toString("hex");
+  const user = { name: account.name, username: account.username, role, salt, passwordHash };
+  users.push(user);
+  writeUsers(users);
+  return user;
+}
+
+function verifyPassword(password, user) {
+  if (!user || typeof user.salt !== "string" || typeof user.passwordHash !== "string") return false;
+  const expected = Buffer.from(user.passwordHash, "hex");
+  if (expected.length !== 64) return false;
+  const actual = crypto.scryptSync(String(password || ""), user.salt, expected.length);
+  return crypto.timingSafeEqual(actual, expected);
+}
+
+function issueSession(user, res) {
+  const token = crypto.randomBytes(32).toString("hex");
+  const session = publicUser(user);
+  sessions.set(token, session);
+  return send(res, 200, { token, user: session });
+}
+
+async function api(req, res, pathname, url) {
+  const method = req.method;
+  if (pathname === "/api/bootstrap" && method === "GET") return send(res, 200, { setupRequired: !readUsers().some((user) => user.role === "admin") });
+  if (pathname === "/api/login" && method === "POST") {
+    const body = await readJson(req);
+    const user = readUsers().find((item) => normalize(item.username) === normalize(body.username));
+    if (!verifyPassword(body.password, user)) return send(res, 401, { error: "Invalid username or password." });
+    return issueSession(user, res);
+  }
+  if (pathname === "/api/setup" && method === "POST") {
+    const body = await readJson(req);
+    if (readUsers().some((user) => user.role === "admin")) return send(res, 409, { error: "An administrator account already exists." });
+    return issueSession(createUser(body, "admin"), res);
+  }
+  if (pathname === "/api/register" && method === "POST") {
+    const body = await readJson(req);
+    return issueSession(createUser(body, "applicant"), res);
   }
 
   const session = requireAuth(req, res);
   if (!session) return;
-
-  if (pathname === "/api/session" && req.method === "GET") {
-    return send(res, 200, { user: session });
-  }
-
-  if (pathname === "/api/logout" && req.method === "POST") {
+  if (pathname === "/api/session" && method === "GET") return send(res, 200, { user: session });
+  if (pathname === "/api/logout" && method === "POST") {
     sessions.delete(tokenFrom(req));
     return send(res, 200, { ok: true });
   }
-
-  if (pathname === "/api/applications" && req.method === "GET") {
+  if (pathname === "/api/applications" && method === "GET") {
     const applications = readApplications();
-    const visible = session.role === "clerk" || session.role === "admin"
-      ? applications
-      : applications.filter((app) => app.submittedBy === session.username);
-    const search = normalize(req.url.split("?q=")[1] ? decodeURIComponent(req.url.split("?q=")[1]) : "");
-    const filtered = search
-      ? visible.filter((app) => app.id.toLower() === search || app.parentId === search || normalize(app.childName).includes(search))
-      : visible;
+    const visible = session.role === "clerk" || session.role === "admin" ? applications : applications.filter((app) => app.submittedBy === session.username);
+    const search = normalize(url.searchParams.get("q"));
+    const filtered = search ? visible.filter((app) => normalize(app.id) === search || normalize(app.parentId) === search || normalize(app.childName).includes(search)) : visible;
     return send(res, 200, { applications: filtered });
   }
-
-  if (pathname === "/api/applications" && req.method === "POST") {
+  if (pathname === "/api/applications" && method === "POST") {
+    if (session.role !== "applicant") return send(res, 403, { error: "Only applicants can submit applications." });
     const body = await readJson(req);
     const required = ["childName", "dob", "gender", "birthPlace", "parentName", "parentId", "parentPhone"];
-    if (required.some((field) => !String(body[field] || "").trim())) {
-      return send(res, 400, { error: "All required application fields must be provided." });
-    }
-
+    if (required.some((field) => !String(body[field] || "").trim())) return send(res, 400, { error: "All required application fields must be provided." });
     const applications = readApplications();
-    const duplicate = applications.find((app) =>
-      normalize(app.childName) === normalize(body.childName) &&
-      app.dob === body.dob &&
-      String(app.parentId).trim() === String(body.parentId).trim()
-    );
-    if (duplicate) {
-      return send(res, 409, { error: `Duplicate application already exists (${duplicate.id}, status: ${duplicate.status}).` });
-    }
-
-    const application = {
-      id: nextId(applications),
-      childName: body.childName.trim(),
-      dob: body.dob,
-      gender: body.gender,
-      birthPlace: body.birthPlace.trim(),
-      parentName: body.parentName.trim(),
-      parentId: body.parentId.trim(),
-      parentPhone: body.parentPhone.trim(),
-      submittedBy: session.username,
-      dateSubmitted: new Date().toISOString().slice(0, 10),
-      status: "Submitted",
-    };
+    const duplicate = applications.find((app) => normalize(app.childName) === normalize(body.childName) && app.dob === body.dob && String(app.parentId).trim() === String(body.parentId).trim());
+    if (duplicate) return send(res, 409, { error: `Duplicate application already exists (${duplicate.id}, status: ${duplicate.status}).` });
+    const application = { id: nextId(applications), childName: String(body.childName).trim(), dob: body.dob, gender: body.gender, birthPlace: String(body.birthPlace).trim(), parentName: String(body.parentName).trim(), parentId: String(body.parentId).trim(), parentPhone: String(body.parentPhone).trim(), submittedBy: session.username, dateSubmitted: new Date().toISOString().slice(0, 10), status: "Submitted" };
     applications.push(application);
     writeApplications(applications);
     return send(res, 201, { application });
   }
-
   const statusMatch = /^\/api\/applications\/([^/]+)\/status$/.exec(pathname);
-  if (statusMatch && req.method === "PATCH") {
+  if (statusMatch && method === "PATCH") {
     if (session.role !== "clerk" && session.role !== "admin") return send(res, 403, { error: "Only staff can update application status." });
     const { status } = await readJson(req);
-    const statuses = ["Submitted", "Under Review", "Approved", "Issued"];
-    if (!statuses.includes(status)) return send(res, 400, { error: "Invalid status." });
+    if (!STATUSES.includes(status)) return send(res, 400, { error: "Invalid status." });
     const applications = readApplications();
     const index = applications.findIndex((app) => app.id === decodeURIComponent(statusMatch[1]));
     if (index === -1) return send(res, 404, { error: "Application not found." });
@@ -171,35 +195,27 @@ async function api(req, res, pathname) {
     writeApplications(applications);
     return send(res, 200, { application: applications[index] });
   }
-
-  send(res, 404, { error: "API endpoint not found." });
+  return send(res, 404, { error: "API endpoint not found." });
 }
 
-const contentTypes = {
-  ".html": "text/html; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-};
-
+const contentTypes = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8" };
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   try {
-    if (url.pathname.startsWith("/api/")) return await api(req, res, url.pathname);
-    let relative = url.pathname === "/" ? "birthtrack-login.html" : url.pathname.slice(1);
-    relative = path.normalize(relative).replace(/^(\.\.[\\/])+/, "");
-    const file = path.join(PUBLIC_DIR, relative);
-    if (!file.startsWith(PUBLIC_DIR) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+    if (url.pathname.startsWith("/api/")) return await api(req, res, url.pathname, url);
+    const decoded = decodeURIComponent(url.pathname);
+    const relative = decoded === "/" ? "birthtrack-login.html" : decoded.slice(1);
+    const file = path.resolve(PUBLIC_DIR, relative);
+    if (!file.startsWith(PUBLIC_DIR + path.sep) || ["data.json", "users.json", ".env"].includes(path.basename(file)) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
       res.writeHead(404);
       return res.end("Not found");
     }
-    res.writeHead(200, { "Content-Type": contentTypes[path.extname(file)] || "application/octet-stream" });
+    res.writeHead(200, { "Content-Type": contentTypes[path.extname(file)] || "application/octet-stream", "X-Content-Type-Options": "nosniff" });
     fs.createReadStream(file).pipe(res);
   } catch (error) {
-    send(res, 500, { error: error.message || "Server error." });
+    if (res.headersSent) return res.destroy();
+    if (!error.statusCode || error.statusCode >= 500) console.error(error);
+    return send(res, error.statusCode || 500, { error: error.statusCode ? error.message : "Server error." });
   }
 });
-
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`BirthTrack is running at http://localhost:${PORT}`);
-});
+server.listen(PORT, "0.0.0.0", () => console.log(`BirthTrack is running at http://localhost:${PORT}`));
