@@ -1,0 +1,29 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BirthTrack - Administrator</title><link rel="stylesheet" href="style.css"></head><body>
+<header id="bar"></header><main><div id="pageError" class="err" role="alert"></div><div class="card"><h2>Overview</h2><div class="grid" id="s"></div></div>
+<div class="card"><h2>User accounts</h2><table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th></th></tr></thead><tbody id="u"></tbody></table></div>
+<div class="card"><h3>Add a user</h3><form id="f"><div class="two"><div><label>Full name</label><input id="n" maxlength="120" required></div><div><label>Role</label><select id="r"><option value="clerk">Registration clerk</option><option value="admin">Administrator</option></select></div>
+<div><label>Username</label><input id="un" minlength="3" maxlength="64" pattern="[A-Za-z0-9._-]+" required></div><div><label>Password</label><input id="pw" type="password" minlength="6" required></div></div><button>Add user</button><div id="m" class="err" role="alert"></div></form></div></main>
+<script src="app.js"></script><script>
+const g=id=>document.getElementById(id);
+async function draw(){
+ const [applications,accounts]=await Promise.all([apps(),fetchUsers()]);
+ g('s').innerHTML='<div class="stat"><b>'+applications.length+'</b>Total</div>'+
+  STAGES.map(stage=>'<div class="stat"><b>'+applications.filter(a=>a.status===stage).length+'</b>'+esc(stage)+'</div>').join('');
+ g('u').innerHTML=accounts.map(account=>'<tr><td>'+esc(account.name)+'</td><td>'+esc(account.u)+'</td><td>'+esc(account.role)+'</td><td>'+
+  (account.id===window.me0.id?'':'<button class="x delete-user" data-id="'+account.id+'">Delete</button>')+'</td></tr>').join('');
+ document.querySelectorAll('.delete-user').forEach(button=>button.onclick=async()=>{
+  if(!confirm('Delete account '+button.dataset.id+'? Applications are retained.'))return;
+  try{await deleteUser(button.dataset.id);await draw()}catch(error){reportError(error)}
+ });
+}
+async function start(){
+ try{window.me0=await guard('admin');await draw()}
+ catch(error){if(error.message!=='Please log in with an account that has access to this page.')reportError(error)}
+}
+g('f').onsubmit=async event=>{
+ event.preventDefault();g('m').textContent='';
+ const message=await addUser(g('n').value,g('un').value,g('pw').value,g('r').value);
+ if(message){g('m').textContent=message;return}
+ g('f').reset();try{await draw()}catch(error){reportError(error)}
+};
+start();</script></body></html>

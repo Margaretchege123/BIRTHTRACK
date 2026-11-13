@@ -1,0 +1,37 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BirthTrack - Login</title><link rel="stylesheet" href="style.css"></head><body>
+<div class="card login"><h2 id="t">BirthTrack</h2><form id="f"><div id="nm"><label>Full name</label><input id="n" maxlength="120"></div>
+<label>Username</label><input id="u" autocomplete="username" minlength="3" maxlength="64" pattern="[A-Za-z0-9._-]+" required><label>Password</label><input id="p" type="password" autocomplete="current-password" minlength="6" required>
+<button id="b">Continue</button><div id="m" class="err" role="alert"></div></form><p id="sw"></p></div>
+<script src="app.js"></script><script>
+let mode='login';
+function $(id){return document.getElementById(id)}
+function draw(){
+ $('t').textContent={login:'Log in',setup:'Set up administrator account',reg:'Create member account'}[mode];
+ $('nm').style.display=mode==='login'?'none':'block';$('n').required=mode!=='login';
+ $('p').autocomplete=mode==='login'?'current-password':'new-password';
+ $('b').textContent=mode==='login'?'Log in':mode==='setup'?'Create administrator account':'Create member account';
+ $('m').textContent='';
+ $('sw').innerHTML=mode==='login'
+  ?'<a id="memberLink" href="#register">Create an account</a>'
+  :mode==='reg'
+   ?'<a id="backLink" href="#login">Back</a>'
+   :'<a id="memberLink" href="#register">Create an account</a>';
+ const memberLink=$('memberLink');
+ if(memberLink)memberLink.onclick=event=>{event.preventDefault();mode='reg';draw()};
+ const backLink=$('backLink');
+ if(backLink)backLink.onclick=async event=>{event.preventDefault();try{const state=await initializeApi();mode=state.setupRequired?'setup':'login';draw()}catch(error){reportError(error)}};
+}
+async function start(){
+ try{const state=await initializeApi();mode=state.setupRequired?'setup':'login';draw()}
+ catch(error){$('t').textContent='System unavailable';reportError(error)}
+}
+$('f').onsubmit=async event=>{
+ event.preventDefault();$('m').textContent='';
+ try{
+  if(mode==='setup')await api('setup','POST',{name:$('n').value,username:$('u').value,password:$('p').value});
+  else if(mode==='reg')await api('register','POST',{name:$('n').value,username:$('u').value,password:$('p').value});
+  else await api('login','POST',{username:$('u').value,password:$('p').value});
+  const result=await api('me');location.replace(({admin:'admin.html',clerk:'clerk.html',applicant:'applicant.html'})[result.user.role]);
+ }catch(error){reportError(error)}
+};
+start();</script></body></html>

@@ -1,0 +1,17 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BirthTrack - Clerk</title><link rel="stylesheet" href="style.css"></head><body>
+<header id="bar"></header><main><div id="pageError" class="err" role="alert"></div><div class="card"><h2>Search and update applications</h2>
+<input id="q" placeholder="Search by Application ID, parent National ID or child's name"><br><br>
+<table id="t"></table></div></main>
+<script src="app.js"></script><script>
+const q=document.getElementById('q');
+let applications=[];
+function draw(){
+ const key=q.value.toLowerCase().trim();
+ document.getElementById('t').innerHTML=HEAD+'<tbody>'+appRows(applications.filter(a=>!key||a.id.toLowerCase()===key||a.nid.toLowerCase()===key||a.child.toLowerCase().includes(key)),true)+'</tbody>';
+ document.querySelectorAll('[data-app-id]').forEach(select=>select.onchange=async()=>{
+  try{await updateStatus(select.dataset.appId,select.value);applications=await apps();draw()}
+  catch(error){reportError(error)}
+ });
+}
+async function start(){try{await guard('clerk');applications=await apps();draw()}catch(error){if(error.message!=='Please log in with an account that has access to this page.')reportError(error)}}
+q.oninput=draw;start();</script></body></html>

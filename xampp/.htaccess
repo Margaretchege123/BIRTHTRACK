@@ -1,0 +1,5 @@
+Options -Indexes
+
+<FilesMatch "^(config\.php|database\.sql|birthtrack_backup\.sql)$">
+    Require all denied
+</FilesMatch>

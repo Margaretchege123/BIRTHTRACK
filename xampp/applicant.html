@@ -1,0 +1,18 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BirthTrack - Applicant</title><link rel="stylesheet" href="style.css"></head><body>
+<header id="bar"></header><main><div id="pageError" class="err" role="alert"></div><div class="card"><h2>Birth certificate application</h2><form id="f"><div class="two">
+<div><label>Child's full name</label><input id="child" maxlength="180" required></div><div><label>Date of birth</label><input id="dob" type="date" required></div>
+<div><label>Place of birth</label><input id="pob" maxlength="180" required></div><div><label>Parent's full name</label><input id="parent" maxlength="180" required></div>
+<div><label>Parent National ID</label><input id="nid" maxlength="80" required></div><div><label>Parent phone</label><input id="ph" maxlength="40" required></div></div>
+<button>Submit application</button><div id="m" role="alert"></div></form></div>
+<div class="card"><h2>My applications</h2><table><thead><tr><th>ID</th><th>Child</th><th>Parent</th><th>Parent National ID</th><th>Date</th><th>Status</th></tr></thead><tbody id="l"></tbody></table></div></main>
+<script src="app.js"></script><script>
+const g=id=>document.getElementById(id);
+async function draw(){g('l').innerHTML=appRows(await apps(),false)}
+async function start(){try{await guard('applicant');await draw()}catch(error){if(error.message!=='Please log in with an account that has access to this page.')reportError(error)}}
+g('f').onsubmit=async event=>{
+ event.preventDefault();g('m').textContent='';g('m').className='';
+ try{const result=await addApp({child:g('child').value.trim(),dob:g('dob').value,pob:g('pob').value.trim(),parent:g('parent').value.trim(),nid:g('nid').value.trim(),phone:g('ph').value.trim()});
+  g('m').className='ok';g('m').textContent='Application submitted. Your Application ID is '+result.id+'.';g('f').reset();await draw()
+ }catch(error){g('m').className='err';g('m').textContent=error.message}
+};
+start();</script></body></html>
